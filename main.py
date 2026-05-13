@@ -1,6 +1,7 @@
 import os
 import json
 import base64
+from datetime import datetime # NUEVO: Para manejar fechas reales
 from email.message import EmailMessage
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,7 +51,6 @@ class EmailData(BaseModel):
     subject: str
     body: str
 
-# NUEVO: Modelo para recibir los datos del informe
 class ReportData(BaseModel):
     total_denuncias: int
     pendientes: int
@@ -96,17 +96,25 @@ async def analyze_denuncia(data: DenunciaData):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# NUEVO: Microservicio analítico con Gemini 2.5 Pro
 @app.post("/generate-report")
 async def generate_report(data: ReportData):
     if not client:
         raise HTTPException(status_code=500, detail="Cliente Vertex AI no inicializado.")
     
+    # NUEVO: Obtener fecha y hora real del sistema para que PIDA no invente datos antiguos
+    ahora = datetime.now()
+    fecha_formateada = ahora.strftime("%d de %m de %Y")
+    anio_actual = ahora.year
+    
     prompt = f"""
     Eres PIDA, la Inteligencia Artificial analítica del Observatorio de Derechos Laborales de Costa Rica.
-    Se te pide redactar un Informe Ejecutivo formal analizando el estado actual de las vulneraciones laborales registradas en la plataforma.
+    Hoy es {fecha_formateada}. Debes redactar un Informe Ejecutivo formal.
     
-    A continuación, los datos matemáticos reales en tiempo real:
+    Instrucciones de cabecera obligatorias:
+    - En la 'Fecha de Emisión' usa: {fecha_formateada}.
+    - En el código de Informe usa el año actual: ODL-PIDA-{anio_actual}-01.
+    
+    Datos matemáticos reales para el análisis:
     - Total de casos recibidos: {data.total_denuncias}
     - Casos pendientes de revisión: {data.pendientes}
     - Casos con asesoría completada: {data.completadas}
@@ -114,14 +122,13 @@ async def generate_report(data: ReportData):
     
     El informe debe contener:
     1. Título formal.
-    2. Resumen Ejecutivo (Visión general del volumen de casos y capacidad de respuesta).
-    3. Análisis de Tendencias (Explica cuáles son las vulneraciones más comunes basándote en los datos y qué sugiere esto sobre el mercado laboral costarricense).
-    4. Recomendaciones Estratégicas (Qué debería hacer el Observatorio o el Ministerio de Trabajo para mitigar estas tendencias).
+    2. Resumen Ejecutivo.
+    3. Análisis de Tendencias.
+    4. Recomendaciones Estratégicas.
     
-    Tono: Académico, institucional, objetivo y directo. No uses saludos genéricos, ve directo al formato de informe.
+    Tono: Académico, institucional y objetivo. No inventes fechas, usa las proporcionadas arriba.
     """
     try:
-        # Se utiliza explícitamente el modelo PRO para mejor razonamiento y redacción
         response = client.models.generate_content(model="gemini-2.5-pro", contents=prompt)
         return {"report": response.text.strip()}
     except Exception as e:
