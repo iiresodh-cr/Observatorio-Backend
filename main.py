@@ -50,6 +50,13 @@ class EmailData(BaseModel):
     subject: str
     body: str
 
+# NUEVO: Modelo para recibir los datos del informe
+class ReportData(BaseModel):
+    total_denuncias: int
+    pendientes: int
+    completadas: int
+    desglose_tipos: dict
+
 @app.post("/extract-metadata")
 async def extract_metadata(file: UploadFile = File(...)):
     if not client:
@@ -79,7 +86,7 @@ async def analyze_denuncia(data: DenunciaData):
     if not client:
         raise HTTPException(status_code=500, detail="Cliente Vertex AI no inicializado.")
     prompt = f"""
-    Eres un abogado experto en derecho laboral de Costa Rica. Redacta un borrador de respuesta empática y profesional para este caso:
+    Eres PIDA, una abogada experta en derecho laboral de Costa Rica. Redacta un borrador de respuesta empática y profesional para este caso:
     Tipo: {data.tipoDenuncia} | Empresa: {data.empresa} | Hechos: {data.descripcion}.
     Brinda opinión legal inicial basada en el Código de Trabajo y pasos a seguir. Devuelve SOLO el texto de asesoría.
     """
@@ -87,6 +94,38 @@ async def analyze_denuncia(data: DenunciaData):
         response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
         return {"draft": response.text.strip()}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# NUEVO: Microservicio analítico con Gemini 2.5 Pro
+@app.post("/generate-report")
+async def generate_report(data: ReportData):
+    if not client:
+        raise HTTPException(status_code=500, detail="Cliente Vertex AI no inicializado.")
+    
+    prompt = f"""
+    Eres PIDA, la Inteligencia Artificial analítica del Observatorio de Derechos Laborales de Costa Rica.
+    Se te pide redactar un Informe Ejecutivo formal analizando el estado actual de las vulneraciones laborales registradas en la plataforma.
+    
+    A continuación, los datos matemáticos reales en tiempo real:
+    - Total de casos recibidos: {data.total_denuncias}
+    - Casos pendientes de revisión: {data.pendientes}
+    - Casos con asesoría completada: {data.completadas}
+    - Desglose detallado por tipo de vulneración: {json.dumps(data.desglose_tipos, ensure_ascii=False)}
+    
+    El informe debe contener:
+    1. Título formal.
+    2. Resumen Ejecutivo (Visión general del volumen de casos y capacidad de respuesta).
+    3. Análisis de Tendencias (Explica cuáles son las vulneraciones más comunes basándote en los datos y qué sugiere esto sobre el mercado laboral costarricense).
+    4. Recomendaciones Estratégicas (Qué debería hacer el Observatorio o el Ministerio de Trabajo para mitigar estas tendencias).
+    
+    Tono: Académico, institucional, objetivo y directo. No uses saludos genéricos, ve directo al formato de informe.
+    """
+    try:
+        # Se utiliza explícitamente el modelo PRO para mejor razonamiento y redacción
+        response = client.models.generate_content(model="gemini-2.5-pro", contents=prompt)
+        return {"report": response.text.strip()}
+    except Exception as e:
+        print(f"Error en Gemini Pro: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/send-email")
@@ -99,13 +138,11 @@ async def send_email(data: EmailData):
         raise HTTPException(status_code=500, detail="Faltan credenciales de OAuth.")
         
     try:
-        # Intentar obtener el template HTML desde Firestore (config/emailTemplate)
         try:
             template_ref = db_fs.collection('config').document('emailTemplate').get()
             if template_ref.exists:
                 html_base = template_ref.to_dict().get('html')
             else:
-                # Template por defecto si no existe en Firestore
                 html_base = """
                 <html>
                 <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
@@ -130,8 +167,6 @@ async def send_email(data: EmailData):
         except Exception:
             html_base = "<html><body>{{CONTENT}}</body></html>"
 
-        # Reemplazar el marcador por el cuerpo de la asesoría
-        # Convertimos los saltos de línea en <br> para el HTML
         formatted_body = data.body.replace("\n", "<br>")
         final_html = html_base.replace("{{CONTENT}}", formatted_body)
 
@@ -139,8 +174,8 @@ async def send_email(data: EmailData):
         service = build('gmail', 'v1', credentials=creds)
         
         message = EmailMessage()
-        message.set_content(data.body) # Versión texto plano
-        message.add_alternative(final_html, subtype='html') # Versión HTML "bonita"
+        message.set_content(data.body) 
+        message.add_alternative(final_html, subtype='html') 
         
         message['To'] = data.to_email
         message['From'] = 'webmaster@iiresodh.org'
