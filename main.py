@@ -1,12 +1,17 @@
 import os
 import json
-import smtplib
-from email.mime.text import MIMEText
+import base64
+from email.message import EmailMessage
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
+
+# Importaciones para OAuth y Gmail API
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 app = FastAPI()
 
@@ -106,28 +111,49 @@ async def analyze_denuncia(data: DenunciaData):
 
 @app.post("/send-email")
 async def send_email(data: EmailData):
-    sender_email = os.environ.get("SMTP_EMAIL", "simulado")
-    sender_password = os.environ.get("SMTP_PASSWORD", "simulado")
+    # Obtener credenciales OAuth desde las variables de entorno
+    client_id = os.environ.get("GMAIL_CLIENT_ID", "simulado")
+    client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "simulado")
+    refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN", "simulado")
     
-    if sender_email == "simulado":
-        # Simulación segura si no hay credenciales configuradas
+    if client_id == "simulado":
         print(f"[CORREO SIMULADO] Para: {data.to_email} | Asunto: {data.subject}\nCuerpo:\n{data.body}")
-        return {"message": "Correo procesado (Modo simulación, falta configurar SMTP)"}
+        return {"message": "Correo procesado (Modo simulación, falta configurar OAuth)"}
         
     try:
-        msg = MIMEText(data.body)
-        msg['Subject'] = data.subject
-        msg['From'] = sender_email
-        msg['To'] = data.to_email
-
-        # Esto funciona para Gmail y Google Workspace (Requiere Contraseña de Aplicación)
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(sender_email, sender_password)
-            server.send_message(msg)
-            
-        return {"message": "Correo enviado con éxito"}
+        # 1. Autenticar usando el Refresh Token
+        creds = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret
+        )
+        
+        # 2. Inicializar la API de Gmail
+        service = build('gmail', 'v1', credentials=creds)
+        
+        # 3. Construir el mensaje de correo
+        message = EmailMessage()
+        message.set_content(data.body)
+        message['To'] = data.to_email
+        message['From'] = 'webmaster@iiresodh.org'
+        message['Subject'] = data.subject
+        
+        # 4. Codificar a Base64 seguro para URL (Requerido por Gmail API)
+        encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        create_message = {'raw': encoded_message}
+        
+        # 5. Enviar usando la API de Google
+        send_message = (service.users().messages().send(userId="me", body=create_message).execute())
+        
+        return {"message": f"Correo enviado con éxito. ID: {send_message['id']}"}
+        
+    except HttpError as error:
+        print(f"Error de la API de Gmail: {error}")
+        raise HTTPException(status_code=500, detail=f"Error en la API de Gmail: {error}")
     except Exception as e:
-        print(f"Error enviando correo: {e}")
+        print(f"Error general enviando correo: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
