@@ -111,17 +111,21 @@ async def analyze_denuncia(data: DenunciaData):
 
 @app.post("/send-email")
 async def send_email(data: EmailData):
-    # Obtener credenciales OAuth desde las variables de entorno
-    client_id = os.environ.get("GMAIL_CLIENT_ID", "simulado")
-    client_secret = os.environ.get("GMAIL_CLIENT_SECRET", "simulado")
-    refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN", "simulado")
+    # Obtiene las variables estrictamente (devuelve None si no existen)
+    client_id = os.environ.get("GMAIL_CLIENT_ID")
+    client_secret = os.environ.get("GMAIL_CLIENT_SECRET")
+    refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN")
     
-    if client_id == "simulado":
-        print(f"[CORREO SIMULADO] Para: {data.to_email} | Asunto: {data.subject}\nCuerpo:\n{data.body}")
-        return {"message": "Correo procesado (Modo simulación, falta configurar OAuth)"}
+    # 1. Falla ruidosamente si no se configuraron las variables en Cloud Run
+    if not client_id or not client_secret or not refresh_token:
+        print("Error crítico: Faltan credenciales de OAuth en Cloud Run.")
+        raise HTTPException(
+            status_code=500, 
+            detail="Error del servidor: Faltan las credenciales de correo electrónico. Contacte a soporte."
+        )
         
     try:
-        # 1. Autenticar usando el Refresh Token
+        # 2. Autenticar usando el Refresh Token
         creds = Credentials(
             token=None,
             refresh_token=refresh_token,
@@ -130,28 +134,28 @@ async def send_email(data: EmailData):
             client_secret=client_secret
         )
         
-        # 2. Inicializar la API de Gmail
+        # 3. Inicializar la API de Gmail
         service = build('gmail', 'v1', credentials=creds)
         
-        # 3. Construir el mensaje de correo
+        # 4. Construir el mensaje de correo
         message = EmailMessage()
         message.set_content(data.body)
         message['To'] = data.to_email
         message['From'] = 'webmaster@iiresodh.org'
         message['Subject'] = data.subject
         
-        # 4. Codificar a Base64 seguro para URL (Requerido por Gmail API)
+        # 5. Codificar a Base64 seguro para URL (Requerido por Gmail API)
         encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
         create_message = {'raw': encoded_message}
         
-        # 5. Enviar usando la API de Google
+        # 6. Enviar usando la API de Google
         send_message = (service.users().messages().send(userId="me", body=create_message).execute())
         
         return {"message": f"Correo enviado con éxito. ID: {send_message['id']}"}
         
     except HttpError as error:
         print(f"Error de la API de Gmail: {error}")
-        raise HTTPException(status_code=500, detail=f"Error en la API de Gmail: {error}")
+        raise HTTPException(status_code=500, detail=f"Google rechazó el envío (Verifique el token): {error}")
     except Exception as e:
         print(f"Error general enviando correo: {e}")
         raise HTTPException(status_code=500, detail=str(e))
