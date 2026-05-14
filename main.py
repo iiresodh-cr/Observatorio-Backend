@@ -58,11 +58,10 @@ class ReportData(BaseModel):
     completadas: int
     desglose_tipos: dict
 
-# NUEVO: Modelo para creación de usuarios autorizados
 class CreateUserData(BaseModel):
     email: str
     nombre: str
-    rol: str # 'admin' o 'autor'
+    rol: str
     addedBy: str
 
 @app.post("/extract-metadata")
@@ -141,8 +140,8 @@ async def generate_report(data: ReportData):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-def _enviar_correo_interno(to_email: str, subject: str, body: str):
-    """Función auxiliar para enviar correos usando la lógica existente"""
+# NUEVO: Se añade el parámetro template_name (por defecto usa emailTemplate)
+def _enviar_correo_interno(to_email: str, subject: str, body: str, template_name: str = 'emailTemplate'):
     client_id = os.environ.get("GMAIL_CLIENT_ID")
     client_secret = os.environ.get("GMAIL_CLIENT_SECRET")
     refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN")
@@ -151,7 +150,7 @@ def _enviar_correo_interno(to_email: str, subject: str, body: str):
         raise Exception("Faltan credenciales de OAuth.")
         
     try:
-        template_ref = db_fs.collection('config').document('emailTemplate').get()
+        template_ref = db_fs.collection('config').document(template_name).get()
         if template_ref.exists:
             html_base = template_ref.to_dict().get('html')
         else:
@@ -179,20 +178,18 @@ def _enviar_correo_interno(to_email: str, subject: str, body: str):
 @app.post("/send-email")
 async def send_email(data: EmailData):
     try:
+        # Aquí se usa el template por defecto (emailTemplate) para asesorías
         _enviar_correo_interno(data.to_email, data.subject, data.body)
         return {"message": "Correo enviado con éxito."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# NUEVO: Endpoint para crear usuario, guardar en Firestore y enviar invitación
 @app.post("/create-user")
 async def create_user(data: CreateUserData):
-    # 1. Generar contraseña temporal segura
     alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
     temp_password = ''.join(secrets.choice(alphabet) for i in range(12))
     
     try:
-        # 2. Crear el usuario en Firebase Authentication
         try:
             user_record = admin_auth.create_user(
                 email=data.email,
@@ -201,14 +198,11 @@ async def create_user(data: CreateUserData):
                 display_name=data.nombre
             )
         except admin_auth.EmailAlreadyExistsError:
-            # Si el usuario ya existe en Auth, actualizamos su contraseña para asegurarnos de que la tenga
             user_record = admin_auth.get_user_by_email(data.email)
             admin_auth.update_user(user_record.uid, password=temp_password, email_verified=False)
             
-        # 3. Generar enlace oficial de verificación de correo de Firebase
         verification_link = admin_auth.generate_email_verification_link(data.email)
         
-        # 4. Registrar en Firestore según el rol
         coleccion = "admins" if data.rol == "admin" else "autores"
         rol_legible = "Administrador del Sistema" if data.rol == "admin" else "Redactor del Blog"
         
@@ -219,25 +213,29 @@ async def create_user(data: CreateUserData):
             "date": firestore.SERVER_TIMESTAMP
         })
         
-        # 5. Enviar el correo de bienvenida y verificación
         subject = f"Invitación: Acceso como {rol_legible}"
-        body = f"""
-        Hola {data.nombre},
         
-        Se le ha concedido acceso a la plataforma del Observatorio de Derechos Laborales con el rol de: {rol_legible}.
+        # NUEVO: Cuerpo del correo con etiquetas HTML para destacar contraseñas y el botón
+        body = f"""
+        <strong>Hola {data.nombre},</strong>
+        
+        Se te ha concedido acceso a la plataforma del Observatorio de Derechos Laborales con el rol de: <strong>{rol_legible}</strong>.
         
         Tus credenciales de acceso temporal son:
-        Usuario: {data.email}
-        Contraseña: {temp_password}
+        Usuario: <strong>{data.email}</strong>
+        Contraseña: <strong style="background-color:#f0f0f0; padding:3px 6px; border-radius:4px; letter-spacing:1px;">{temp_password}</strong>
         
-        MUY IMPORTANTE: Antes de poder iniciar sesión por primera vez, debes verificar tu cuenta haciendo clic en el siguiente enlace de seguridad:
-        
-        {verification_link}
-        
+        <strong style="color:#d32f2f;">MUY IMPORTANTE:</strong> Antes de poder iniciar sesión por primera vez, debes verificar tu cuenta haciendo clic en el siguiente botón de seguridad:
+        <br>
+        <a href="{verification_link}" style="display:inline-block; padding:12px 24px; background-color:#003399; color:white; text-decoration:none; border-radius:5px; margin-top:15px; margin-bottom:15px; font-weight:bold;">Verificar mi Cuenta</a>
+        <br>
+        <small style="color:#666;">Si el botón no funciona, copia y pega este enlace en tu navegador:<br>{verification_link}</small>
+        <br><br>
         Una vez verificado el correo, podrás entrar al panel administrativo.
         """
         
-        _enviar_correo_interno(data.email, subject, body.strip())
+        # NUEVO: Se envía usando explícitamente el template 'inviteTemplate'
+        _enviar_correo_interno(data.email, subject, body.strip(), template_name='inviteTemplate')
         
         return {"message": "Usuario creado, registrado y correo de verificación enviado."}
         
