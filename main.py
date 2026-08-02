@@ -181,38 +181,52 @@ async def recalcular_stats():
 
 @app.post("/incrementar-completadas")
 async def incrementar_completadas(data: IncrementCompletadasData):
-    """Suma 1 a completadas, resta 1 a pendientes y actualiza el gráfico"""
+    """Suma 1 a completadas, resta 1 a pendientes y actualiza el gráfico con autocuración"""
     try:
         stats_ref = db_fs.collection("stats").document("global_counters")
+        tipo_clean = data.tipoDenuncia.strip() if data.tipoDenuncia else "Otro"
         
-        # Estructura de diccionario anidado correcta para set(merge=True) en Python
-        update_data = {
+        doc = stats_ref.get()
+        if not doc.exists:
+            return await recalcular_stats()
+        
+        # Intentar actualización atómica mediante update()
+        stats_ref.update({
             "completadas": firestore.Increment(1),
             "pendientes": firestore.Increment(-1),
-            "desglose_tipos": {
-                data.tipoDenuncia: firestore.Increment(1)
-            },
+            f"desglose_tipos.{tipo_clean}": firestore.Increment(1),
             "lastUpdated": firestore.SERVER_TIMESTAMP
-        }
-        
-        stats_ref.set(update_data, merge=True)
+        })
         return {"status": "ok"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Fallback de autocuración: Si la actualización falla por cualquier motivo, se recalcula automáticamente
+        try:
+            return await recalcular_stats()
+        except Exception:
+            raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/incrementar-nuevas")
 async def incrementar_nuevas():
-    """Suma 1 al total de denuncias y 1 a pendientes cuando entra un caso nuevo"""
+    """Suma 1 al total de denuncias y 1 a pendientes cuando entra un caso nuevo con autocuración"""
     try:
         stats_ref = db_fs.collection("stats").document("global_counters")
-        stats_ref.set({
+        doc = stats_ref.get()
+        if not doc.exists:
+            return await recalcular_stats()
+
+        stats_ref.update({
             "total_denuncias": firestore.Increment(1),
             "pendientes": firestore.Increment(1),
             "lastUpdated": firestore.SERVER_TIMESTAMP
-        }, merge=True)
+        })
         return {"status": "ok"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Fallback de autocuración
+        try:
+            return await recalcular_stats()
+        except Exception:
+            raise HTTPException(status_code=500, detail=str(e))
 
 # ==============================================================================
 # ENDPOINT EXISTENTE: Servir documentos PDF desde tu propio dominio
