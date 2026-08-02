@@ -3,9 +3,10 @@ import json
 import base64
 import secrets
 import string
+import urllib.parse
 from datetime import datetime
 from email.message import EmailMessage
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
@@ -18,7 +19,7 @@ from googleapiclient.errors import HttpError
 
 # Importaciones para Firebase
 import firebase_admin
-from firebase_admin import credentials, firestore, auth as admin_auth
+from firebase_admin import credentials, firestore, storage, auth as admin_auth
 
 app = FastAPI()
 
@@ -63,6 +64,35 @@ class CreateUserData(BaseModel):
     nombre: str
     rol: str
     addedBy: str
+
+# ==============================================================================
+# NUEVO ENDPOINT: Servir documentos PDF desde tu propio dominio
+# ==============================================================================
+@app.get("/documentos/{filename}")
+async def servir_documento(filename: str):
+    try:
+        # Decodificar el nombre por si trae caracteres especiales o espacios
+        decoded_filename = urllib.parse.unquote(filename)
+        bucket = storage.bucket(os.environ.get("STORAGE_BUCKET", "observatorio-laboral-cr.firebasestorage.app"))
+        blob = bucket.blob(f"documentos/{decoded_filename}")
+
+        if not blob.exists():
+            raise HTTPException(status_code=404, detail="El documento no fue encontrado en el servidor.")
+
+        contents = blob.download_as_bytes()
+
+        return Response(
+            content=contents,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"inline; filename=\"{decoded_filename}\"",
+                "Cache-Control": "public, max-age=86400"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/extract-metadata")
 async def extract_metadata(file: UploadFile = File(...)):
