@@ -4,6 +4,7 @@ import base64
 import secrets
 import string
 import urllib.parse
+import smtplib
 from datetime import datetime
 from email.message import EmailMessage
 from typing import Optional
@@ -13,11 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
-
-# Importaciones para OAuth y Gmail API
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
 # Importaciones para Firebase
 import firebase_admin
@@ -181,52 +177,38 @@ async def recalcular_stats():
 
 @app.post("/incrementar-completadas")
 async def incrementar_completadas(data: IncrementCompletadasData):
-    """Suma 1 a completadas, resta 1 a pendientes y actualiza el gráfico con autocuración"""
+    """Suma 1 a completadas, resta 1 a pendientes y actualiza el gráfico"""
     try:
         stats_ref = db_fs.collection("stats").document("global_counters")
-        tipo_clean = data.tipoDenuncia.strip() if data.tipoDenuncia else "Otro"
         
-        doc = stats_ref.get()
-        if not doc.exists:
-            return await recalcular_stats()
-        
-        # Intentar actualización atómica mediante update()
-        stats_ref.update({
+        # Estructura de diccionario anidado correcta para set(merge=True) en Python
+        update_data = {
             "completadas": firestore.Increment(1),
             "pendientes": firestore.Increment(-1),
-            f"desglose_tipos.{tipo_clean}": firestore.Increment(1),
+            "desglose_tipos": {
+                data.tipoDenuncia: firestore.Increment(1)
+            },
             "lastUpdated": firestore.SERVER_TIMESTAMP
-        })
+        }
+        
+        stats_ref.set(update_data, merge=True)
         return {"status": "ok"}
     except Exception as e:
-        # Fallback de autocuración: Si la actualización falla por cualquier motivo, se recalcula automáticamente
-        try:
-            return await recalcular_stats()
-        except Exception:
-            raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/incrementar-nuevas")
 async def incrementar_nuevas():
-    """Suma 1 al total de denuncias y 1 a pendientes cuando entra un caso nuevo con autocuración"""
+    """Suma 1 al total de denuncias y 1 a pendientes cuando entra un caso nuevo"""
     try:
         stats_ref = db_fs.collection("stats").document("global_counters")
-        doc = stats_ref.get()
-        if not doc.exists:
-            return await recalcular_stats()
-
-        stats_ref.update({
+        stats_ref.set({
             "total_denuncias": firestore.Increment(1),
             "pendientes": firestore.Increment(1),
             "lastUpdated": firestore.SERVER_TIMESTAMP
-        })
+        }, merge=True)
         return {"status": "ok"}
     except Exception as e:
-        # Fallback de autocuración
-        try:
-            return await recalcular_stats()
-        except Exception:
-            raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ==============================================================================
 # ENDPOINT EXISTENTE: Servir documentos PDF desde tu propio dominio
@@ -345,12 +327,11 @@ async def generate_report(data: ReportData):
         raise HTTPException(status_code=500, detail=str(e))
 
 def _enviar_correo_interno(to_email: str, subject: str, body: str, template_name: str = 'emailTemplate'):
-    client_id = os.environ.get("GMAIL_CLIENT_ID")
-    client_secret = os.environ.get("GMAIL_CLIENT_SECRET")
-    refresh_token = os.environ.get("GMAIL_REFRESH_TOKEN")
+    smtp_user = os.environ.get("SMTP_USER", "no-responder@observatoriolaboralcr.org")
+    smtp_pass = os.environ.get("SMTP_PASSWORD")
     
-    if not client_id or not client_secret or not refresh_token:
-        raise Exception("Faltan credenciales de OAuth.")
+    if not smtp_pass:
+        raise Exception("Falta la contraseña del servidor SMTP (SMTP_PASSWORD en las variables de entorno).")
         
     try:
         template_ref = db_fs.collection('config').document(template_name).get()
@@ -364,19 +345,24 @@ def _enviar_correo_interno(to_email: str, subject: str, body: str, template_name
     formatted_body = body.replace("\n", "<br>")
     final_html = html_base.replace("{{CONTENT}}", formatted_body)
 
-    creds = Credentials(token=None, refresh_token=refresh_token, token_uri="https://oauth2.googleapis.com/token", client_id=client_id, client_secret=client_secret)
-    service = build('gmail', 'v1', credentials=creds)
-    
     message = EmailMessage()
     message.set_content(body) 
     message.add_alternative(final_html, subtype='html') 
     
     message['To'] = to_email
-    message['From'] = 'webmaster@iiresodh.org'
+    message['From'] = f"Observatorio Laboral CR <{smtp_user}>" 
     message['Subject'] = subject
     
-    encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-    service.users().messages().send(userId="me", body={'raw': encoded_message}).execute()
+    smtp_server = "mailout.easymail.ca"
+    smtp_port = 465 
+    
+    try:
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            server.login(smtp_user, smtp_pass)
+            server.send_message(message)
+    except Exception as e:
+        print(f"Error SMTP: {e}")
+        raise Exception("Ocurrió un error al intentar enviar el correo mediante SMTP.")
 
 @app.post("/send-email")
 async def send_email(data: EmailData):
