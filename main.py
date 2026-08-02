@@ -71,6 +71,9 @@ class StatusUpdatePayload(BaseModel):
     denuncia_id: str
     nuevo_estado: str = "completada"
 
+class IncrementCompletadasData(BaseModel):
+    tipoDenuncia: str
+
 
 # ==============================================================================
 # NUEVO ENDPOINT: Actualizar estado de denuncia y contadores globales (Stats)
@@ -176,6 +179,34 @@ async def recalcular_stats():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/incrementar-completadas")
+async def incrementar_completadas(data: IncrementCompletadasData):
+    """Suma 1 a completadas, resta 1 a pendientes y actualiza el gráfico"""
+    try:
+        stats_ref = db_fs.collection("stats").document("global_counters")
+        stats_ref.set({
+            "completadas": firestore.Increment(1),
+            "pendientes": firestore.Increment(-1),
+            f"desglose_tipos.{data.tipoDenuncia}": firestore.Increment(1),
+            "lastUpdated": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/incrementar-nuevas")
+async def incrementar_nuevas():
+    """Suma 1 al total de denuncias y 1 a pendientes cuando entra un caso nuevo"""
+    try:
+        stats_ref = db_fs.collection("stats").document("global_counters")
+        stats_ref.set({
+            "total_denuncias": firestore.Increment(1),
+            "pendientes": firestore.Increment(1),
+            "lastUpdated": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ==============================================================================
 # ENDPOINT EXISTENTE: Servir documentos PDF desde tu propio dominio
