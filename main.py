@@ -6,6 +6,8 @@ import string
 import urllib.parse
 from datetime import datetime
 from email.message import EmailMessage
+from typing import Optional
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -65,8 +67,70 @@ class CreateUserData(BaseModel):
     rol: str
     addedBy: str
 
+class StatusUpdatePayload(BaseModel):
+    denuncia_id: str
+    nuevo_estado: str = "completada"
+
+
 # ==============================================================================
-# NUEVO ENDPOINT: Servir documentos PDF desde tu propio dominio
+# NUEVO ENDPOINT: Actualizar estado de denuncia y contadores globales (Stats)
+# ==============================================================================
+@app.post("/completar-denuncia")
+async def completar_denuncia(payload: StatusUpdatePayload):
+    """
+    Marca una denuncia como completada e incrementa los contadores
+    globales en 'stats/global_counters' de forma atómica.
+    """
+    try:
+        denuncia_ref = db_fs.collection("denuncias").document(payload.denuncia_id)
+        denuncia_doc = denuncia_ref.get()
+
+        if not denuncia_doc.exists:
+            raise HTTPException(status_code=404, detail="La denuncia especificada no existe.")
+
+        denuncia_data = denuncia_doc.to_dict()
+        estado_actual = denuncia_data.get("estado", "pendiente")
+        tipo_denuncia = denuncia_data.get("tipoDenuncia", "otros")
+
+        # Si ya está completada, no duplicamos incrementos
+        if estado_actual == "completada":
+            return {"message": "La denuncia ya se encontraba en estado completada."}
+
+        # 1. Actualizar el documento de la denuncia
+        denuncia_ref.update({
+            "estado": "completada",
+            "updatedAt": firestore.SERVER_TIMESTAMP
+        })
+
+        # 2. Actualizar el documento global de estadísticas (stats/global_counters)
+        stats_ref = db_fs.collection("stats").document("global_counters")
+
+        # Usamos firestore.Increment para evitar condiciones de carrera (Race Conditions)
+        update_data = {
+            "completadas": firestore.Increment(1),
+            f"desglose_tipos.{tipo_denuncia}": firestore.Increment(1),
+            "lastUpdated": firestore.SERVER_TIMESTAMP
+        }
+
+        # Si estaba pendiente, decrementamos las pendientes
+        if estado_actual == "pendiente":
+            update_data["pendientes"] = firestore.Increment(-1)
+
+        stats_ref.set(update_data, merge=True)
+
+        return {
+            "message": "Denuncia completada exitosamente y contadores actualizados.",
+            "denuncia_id": payload.denuncia_id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al actualizar la denuncia: {str(e)}")
+
+
+# ==============================================================================
+# ENDPOINT EXISTENTE: Servir documentos PDF desde tu propio dominio
 # ==============================================================================
 @app.get("/documentos/{filename}")
 async def servir_documento(filename: str):
@@ -74,15 +138,12 @@ async def servir_documento(filename: str):
         decoded_filename = urllib.parse.unquote(filename)
         bucket = storage.bucket(os.environ.get("STORAGE_BUCKET", "observatorio-laboral-cr.firebasestorage.app"))
         
-        # 1. Intenta buscar el archivo directo
         blob = bucket.blob(f"documentos/{decoded_filename}")
 
-        # 2. Si no existe directo (porque en Storage tiene el timestamp "1785..._"), lo busca por coincidencia
         if not blob.exists():
             blobs = bucket.list_blobs(prefix="documentos/")
             matched_blob = None
             for b in blobs:
-                # Compara si el archivo en Storage termina con "_nombre.pdf"
                 if b.name.endswith(f"_{decoded_filename}"):
                     matched_blob = b
                     break
@@ -120,7 +181,7 @@ async def extract_metadata(file: UploadFile = File(...)):
         Eres un asistente legal experto en la normativa de Costa Rica. 
         Analiza el documento PDF adjunto y extrae la siguiente información en formato JSON estricto:
         - 'titulo': El nombre oficial de la norma, ley o sentencia.
-        - 'categoria': Clasifícalo estrictamente en una de estas: 'leyes', 'tratados', 'jurisprudencia', 'articulos', 'reglamentos'.
+        - 'categoria': Clasifícalo strictly en una de estas: 'leyes', 'tratados', 'jurisprudencia', 'articulos', 'reglamentos'.
         - 'anio': El año de publicación o emisión (número entero).
         - 'descripcion': Un resumen o síntesis del documento que tenga entre dos y tres líneas.
         Reglas: 1. Si es una Ley Nacional, usa 'leyes'. 2. Si es un Reglamento, usa 'reglamentos'. 3. Devuelve SOLO el objeto JSON válido.
@@ -184,7 +245,6 @@ async def generate_report(data: ReportData):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# NUEVO: Se añade el parámetro template_name (por defecto usa emailTemplate)
 def _enviar_correo_interno(to_email: str, subject: str, body: str, template_name: str = 'emailTemplate'):
     client_id = os.environ.get("GMAIL_CLIENT_ID")
     client_secret = os.environ.get("GMAIL_CLIENT_SECRET")
@@ -222,7 +282,6 @@ def _enviar_correo_interno(to_email: str, subject: str, body: str, template_name
 @app.post("/send-email")
 async def send_email(data: EmailData):
     try:
-        # Aquí se usa el template por defecto (emailTemplate) para asesorías
         _enviar_correo_interno(data.to_email, data.subject, data.body)
         return {"message": "Correo enviado con éxito."}
     except Exception as e:
@@ -259,7 +318,6 @@ async def create_user(data: CreateUserData):
         
         subject = f"Invitación: Acceso como {rol_legible}"
         
-        # NUEVO: Cuerpo del correo con etiquetas HTML para destacar contraseñas y el botón
         body = f"""
         <strong>Hola {data.nombre},</strong>
         
@@ -278,7 +336,6 @@ async def create_user(data: CreateUserData):
         Una vez verificado el correo, podrás entrar al panel administrativo.
         """
         
-        # NUEVO: Se envía usando explícitamente el template 'inviteTemplate'
         _enviar_correo_interno(data.email, subject, body.strip(), template_name='inviteTemplate')
         
         return {"message": "Usuario creado, registrado y correo de verificación enviado."}
