@@ -184,12 +184,18 @@ async def incrementar_completadas(data: IncrementCompletadasData):
     """Suma 1 a completadas, resta 1 a pendientes y actualiza el gráfico"""
     try:
         stats_ref = db_fs.collection("stats").document("global_counters")
-        stats_ref.set({
+        
+        # Estructura de diccionario anidado correcta para set(merge=True) en Python
+        update_data = {
             "completadas": firestore.Increment(1),
             "pendientes": firestore.Increment(-1),
-            f"desglose_tipos.{data.tipoDenuncia}": firestore.Increment(1),
+            "desglose_tipos": {
+                data.tipoDenuncia: firestore.Increment(1)
+            },
             "lastUpdated": firestore.SERVER_TIMESTAMP
-        }, merge=True)
+        }
+        
+        stats_ref.set(update_data, merge=True)
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
