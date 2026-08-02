@@ -81,6 +81,9 @@ async def servir_documento(filename: str):
 
         contents = blob.download_as_bytes()
 
+        # Extrae solo el nombre real del archivo quitando el timestamp inicial (ej. "1785..._")
+        clean_filename = decoded_filename.split('_', 1)[-1] if '_' in decoded_filename else decoded_filename
+
         return Response(
             content=contents,
             media_type="application/pdf",
