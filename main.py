@@ -71,24 +71,35 @@ class CreateUserData(BaseModel):
 @app.get("/documentos/{filename}")
 async def servir_documento(filename: str):
     try:
-        # Decodificar el nombre por si trae caracteres especiales o espacios
         decoded_filename = urllib.parse.unquote(filename)
         bucket = storage.bucket(os.environ.get("STORAGE_BUCKET", "observatorio-laboral-cr.firebasestorage.app"))
+        
+        # 1. Intenta buscar el archivo directo
         blob = bucket.blob(f"documentos/{decoded_filename}")
 
+        # 2. Si no existe directo (porque en Storage tiene el timestamp "1785..._"), lo busca por coincidencia
         if not blob.exists():
-            raise HTTPException(status_code=404, detail="El documento no fue encontrado en el servidor.")
+            blobs = bucket.list_blobs(prefix="documentos/")
+            matched_blob = None
+            for b in blobs:
+                # Compara si el archivo en Storage termina con "_nombre.pdf"
+                if b.name.endswith(f"_{decoded_filename}"):
+                    matched_blob = b
+                    break
+            
+            if matched_blob:
+                blob = matched_blob
+            else:
+                raise HTTPException(status_code=404, detail="El documento no fue encontrado en el servidor.")
 
         contents = blob.download_as_bytes()
-
-        # Extrae solo el nombre real del archivo quitando el timestamp inicial (ej. "1785..._")
-        clean_filename = decoded_filename.split('_', 1)[-1] if '_' in decoded_filename else decoded_filename
+        clean_filename = blob.name.split('/')[-1].split('_', 1)[-1]
 
         return Response(
             content=contents,
             media_type="application/pdf",
             headers={
-                "Content-Disposition": f"inline; filename=\"{decoded_filename}\"",
+                "Content-Disposition": f"inline; filename=\"{clean_filename}\"",
                 "Cache-Control": "public, max-age=86400"
             }
         )
