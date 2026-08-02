@@ -129,6 +129,54 @@ async def completar_denuncia(payload: StatusUpdatePayload):
         raise HTTPException(status_code=500, detail=f"Error al actualizar la denuncia: {str(e)}")
 
 
+@app.post("/recalcular-stats")
+async def recalcular_stats():
+    """
+    Recalcula desde cero el documento 'stats/global_counters' 
+    escaneando la colección de denuncias.
+    """
+    try:
+        denuncias_ref = db_fs.collection("denuncias").stream()
+        
+        total = 0
+        completadas = 0
+        pendientes = 0
+        desglose_tipos = {}
+
+        for doc in denuncias_ref:
+            data = doc.to_dict()
+            total += 1
+            estado = data.get("estado", "pendiente")
+            tipo = data.get("tipoDenuncia", "otros")
+
+            if estado == "completada":
+                completadas += 1
+                desglose_tipos[tipo] = desglose_tipos.get(tipo, 0) + 1
+            elif estado == "pendiente":
+                pendientes += 1
+
+        # Sobrescribir documento de estadísticas
+        stats_ref = db_fs.collection("stats").document("global_counters")
+        stats_ref.set({
+            "total_denuncias": total,
+            "completadas": completadas,
+            "pendientes": pendientes,
+            "desglose_tipos": desglose_tipos,
+            "lastUpdated": firestore.SERVER_TIMESTAMP
+        })
+
+        return {
+            "message": "Estadísticas recalculadas exitosamente.",
+            "stats": {
+                "total": total,
+                "completadas": completadas,
+                "pendientes": pendientes
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==============================================================================
 # ENDPOINT EXISTENTE: Servir documentos PDF desde tu propio dominio
 # ==============================================================================
