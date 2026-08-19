@@ -258,15 +258,14 @@ async def extract_metadata(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Solo se permiten archivos PDF")
     try:
         content = await file.read()
-        prompt = f"""
-        Eres PIDA, asistente de análisis e información del Observatorio de Derechos Laborales de Costa Rica.
-        Redacta un borrador de orientación informativa, empática y objetiva sobre la siguiente consulta:
-        Tipo de vulneración: {data.tipoDenuncia} | Empleador/Empresa: {data.empresa} | Hechos: {data.descripcion}.
-        
-        Instrucciones:
-        1. Explica los derechos y principios normativos generales contemplados en el Código de Trabajo de Costa Rica aplicables al caso.
-        2. Sugiere pasos prácticos y canales institucionales de atención (como la Inspección de Trabajo del MTSS o la Defensa Pública Laboral).
-        3. Mantén un tono orientador. Devuelve ÚNICAMENTE el texto de orientación sin encabezados innecesarios.
+        prompt = """
+        Eres un asistente legal experto en la normativa de Costa Rica. 
+        Analiza el documento PDF adjunto y extrae la siguiente información en formato JSON estricto:
+        - 'titulo': El nombre oficial de la norma, ley o sentencia.
+        - 'categoria': Clasifícalo strictly en una de estas: 'leyes', 'tratados', 'jurisprudencia', 'articulos', 'reglamentos'.
+        - 'anio': El año de publicación o emisión (número entero).
+        - 'descripcion': Un resumen o síntesis del documento que tenga entre dos y tres líneas.
+        Reglas: 1. Si es una Ley Nacional, usa 'leyes'. 2. Si es un Reglamento, usa 'reglamentos'. 3. Devuelve SOLO el objeto JSON válido.
         """
         pdf_part = types.Part.from_bytes(data=content, mime_type="application/pdf")
         response = client.models.generate_content(model="gemini-2.5-flash", contents=[prompt, pdf_part])
