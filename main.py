@@ -279,9 +279,14 @@ async def analyze_denuncia(data: DenunciaData):
     if not client:
         raise HTTPException(status_code=500, detail="Cliente Vertex AI no inicializado.")
     prompt = f"""
-    Eres PIDA, una abogada experta en derecho laboral de Costa Rica. Redacta un borrador de respuesta empática y profesional para este caso:
-    Tipo: {data.tipoDenuncia} | Empresa: {data.empresa} | Hechos: {data.descripcion}.
-    Brinda opinión legal inicial basada en el Código de Trabajo y pasos a seguir. Devuelve SOLO el texto de asesoría.
+    Eres PIDA, asistente de análisis e información del Observatorio de Derechos Laborales de Costa Rica.
+    Redacta un borrador de orientación informativa, empática y objetiva sobre la siguiente consulta:
+    Tipo de vulneración: {data.tipoDenuncia} | Empleador/Empresa: {data.empresa} | Hechos: {data.descripcion}.
+    
+    Instrucciones:
+    1. Explica los derechos y principios normativos generales contemplados en el Código de Trabajo de Costa Rica aplicables al caso.
+    2. Sugiere pasos prácticos y canales institucionales de atención (como la Inspección de Trabajo del MTSS o la Defensa Pública Laboral).
+    3. Mantén un tono orientador. Devuelve ÚNICAMENTE el texto de orientación sin encabezados innecesarios.
     """
     try:
         response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
