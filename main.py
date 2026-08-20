@@ -370,6 +370,7 @@ async def create_user(data: CreateUserData, user: dict = Depends(verificar_usuar
     temp_password = ''.join(secrets.choice(alphabet) for i in range(12))
     
     try:
+        # 1. Crear o actualizar el usuario en Firebase Authentication
         try:
             user_record = admin_auth.create_user(
                 email=data.email,
@@ -381,7 +382,19 @@ async def create_user(data: CreateUserData, user: dict = Depends(verificar_usuar
             user_record = admin_auth.get_user_by_email(data.email)
             admin_auth.update_user(user_record.uid, password=temp_password, email_verified=False)
             
-        verification_link = admin_auth.generate_email_verification_link(data.email)
+        # 2. Configurar la URL de redirección a tu dominio oficial
+        action_code_settings = admin_auth.ActionCodeSettings(
+            url="https://observatoriolaboralcr.org/auth-action",
+            handle_code_in_app=True,
+        )
+
+        # 3. Generar el enlace con la configuración de acción
+        verification_link = admin_auth.generate_email_verification_link(
+            data.email,
+            action_code_settings=action_code_settings
+        )
+
+        # 4. Guardar rol en Firestore
         coleccion = "admins" if data.rol == "admin" else "autores"
         rol_legible = "Administrador del Sistema" if data.rol == "admin" else "Redactor del Blog"
         
@@ -392,6 +405,7 @@ async def create_user(data: CreateUserData, user: dict = Depends(verificar_usuar
             "date": firestore.SERVER_TIMESTAMP
         })
         
+        # 5. Estructurar y enviar correo de bienvenida
         subject = f"Invitación: Acceso como {rol_legible}"
         body = f"""
         <strong>Hola {data.nombre},</strong><br><br>
