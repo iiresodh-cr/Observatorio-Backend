@@ -148,10 +148,17 @@ async def request_password_reset(payload: PasswordResetPayload):
             handle_code_in_app=True,
         )
 
-        reset_link = admin_auth.generate_password_reset_link(
+        raw_reset_link = admin_auth.generate_password_reset_link(
             user_record.email, 
             action_code_settings=action_code_settings
         )
+
+        # Extracción del parámetro oobCode de la URL de Firebase
+        parsed_url = urllib.parse.urlparse(raw_reset_link)
+        oob_code = urllib.parse.parse_qs(parsed_url.query).get('oobCode', [''])[0]
+
+        # Enlace directo con dominio propio
+        reset_link = f"https://observatoriolaboralcr.org/auth-action?mode=resetPassword&oobCode={oob_code}"
 
         subject = "Observatorio Laboral: Restablecer su contraseña"
         body = f"""
@@ -374,7 +381,7 @@ def _enviar_correo_interno(to_email: str, subject: str, body: str, template_name
     disclaimer = """
     <br><hr style="border:0; border-top:1px solid #e0e0e0; margin:20px 0;">
     <p style="font-size:11px; color:#777; line-height:1.4;">
-    <strong>Aviso Legal:</strong> La información suministrada tiene carácter estrictamente orientador e informativo conforme a la Ley N° 8968 de Costa Rica. No constituye patrocinio legal ni sustituye trámites ante el Ministerio de Trabajo y Seguridad Social (MTSS) o tribunales.
+    <strong>Aviso Legal:</strong> La información suministrada tiene carácter strictly orientador e informativo conforme a la Ley N° 8968 de Costa Rica. No constituye patrocinio legal ni sustituye trámites ante el Ministerio de Trabajo y Seguridad Social (MTSS) o tribunales.
     </p>
     """
 
@@ -430,10 +437,17 @@ async def create_user(data: CreateUserData, user: dict = Depends(verificar_usuar
             handle_code_in_app=True,
         )
 
-        verification_link = admin_auth.generate_email_verification_link(
+        raw_verification_link = admin_auth.generate_email_verification_link(
             data.email,
             action_code_settings=action_code_settings
         )
+
+        # Extracción del parámetro oobCode de la URL de Firebase
+        parsed_url = urllib.parse.urlparse(raw_verification_link)
+        oob_code = urllib.parse.parse_qs(parsed_url.query).get('oobCode', [''])[0]
+
+        # Enlace directo con dominio propio
+        verification_link = f"https://observatoriolaboralcr.org/auth-action?mode=verifyEmail&oobCode={oob_code}"
         
         coleccion = "admins" if data.rol == "admin" else "autores"
         rol_legible = "Administrador del Sistema" if data.rol == "admin" else "Redactor del Blog"
