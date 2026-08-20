@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Response, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from google import genai
 from google.genai import types
 
@@ -21,7 +21,7 @@ from firebase_admin import credentials, firestore, storage, auth as admin_auth
 
 app = FastAPI(title="Backend Observatorio Laboral CR")
 
-# 1. CORS Seguro y Restringido
+# 1. CORS Seguro
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -54,9 +54,8 @@ except Exception as e:
 # DEPENDENCIAS DE SEGURIDAD / AUTENTICACIÓN
 # ==============================================================================
 async def verificar_usuario_autenticado(authorization: Optional[str] = Header(None)):
-    """Verifica que la petición incluya un token de Firebase Auth válido."""
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Encabezado de autorización ausente o con formato inválido.")
+        raise HTTPException(status_code=401, detail="Encabezado de autorización ausente o inválido.")
     
     token = authorization.split("Bearer ")[1].strip()
     try:
@@ -74,7 +73,7 @@ class DenunciaData(BaseModel):
     empresa: str
 
 class EmailData(BaseModel):
-    to_email: EmailStr
+    to_email: str
     subject: str
     body: str
 
@@ -85,7 +84,7 @@ class ReportData(BaseModel):
     desglose_tipos: dict
 
 class CreateUserData(BaseModel):
-    email: EmailStr
+    email: str
     nombre: str
     rol: str
     addedBy: str
@@ -97,24 +96,26 @@ class StatusUpdatePayload(BaseModel):
 class IncrementCompletadasData(BaseModel):
     tipoDenuncia: str
 
+class PasswordResetPayload(BaseModel):
+    email: str
+
 # ==============================================================================
-# ENDPOINTS PÚBLICOS (ACCESIBLES DESDE FORMULARIO CIUDADANO)
+# ENDPOINTS PÚBLICOS
 # ==============================================================================
 @app.post("/analyze-denuncia")
 async def analyze_denuncia(data: DenunciaData):
-    """Genera un borrador informativo para la revisión del equipo letrado."""
     if not client:
         raise HTTPException(status_code=500, detail="Cliente Vertex AI no inicializado.")
     
     prompt = f"""
-    Eres PIDA, asistente técnica y de orientación del Observatorio de Derechos Laborales de Costa Rica.
-    Genera un borrador de orientación informativa, estructurado, empático y profesional para este caso:
+    Eres PIDA, asistente de análisis e información del Observatorio de Derechos Laborales de Costa Rica.
+    Redacta un borrador de orientación informativa, empática y objetiva sobre la siguiente consulta:
     Tipo de vulneración: {data.tipoDenuncia} | Empleador/Empresa: {data.empresa} | Hechos: {data.descripcion}.
     
-    Lineamientos:
-    1. Menciona los artículos y garantías básicas del Código de Trabajo y la normativa costarricense aplicables.
-    2. Brinda pasos iniciales recomendados (vía administrativa MTSS, recolección de pruebas, inspección laboral).
-    3. Mantén un tono orientador. Devuelve ÚNICAMENTE el texto de respuesta sin títulos genéricos.
+    Instrucciones:
+    1. Explica los derechos y principios normativos generales contemplados en el Código de Trabajo de Costa Rica aplicables al caso.
+    2. Sugiere pasos prácticos y canales institucionales de atención (como la Inspección de Trabajo del MTSS o la Defensa Pública Laboral).
+    3. Mantén un tono orientador. Devuelve ÚNICAMENTE el texto de orientación sin encabezados innecesarios.
     """
     try:
         response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
@@ -124,7 +125,6 @@ async def analyze_denuncia(data: DenunciaData):
 
 @app.post("/incrementar-nuevas")
 async def incrementar_nuevas():
-    """Suma 1 al contador global de casos registrados."""
     try:
         stats_ref = db_fs.collection("stats").document("global_counters")
         stats_ref.set({
@@ -133,6 +133,40 @@ async def incrementar_nuevas():
             "lastUpdated": firestore.SERVER_TIMESTAMP
         }, merge=True)
         return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/request-password-reset")
+async def request_password_reset(payload: PasswordResetPayload):
+    """Genera y envía enlace de recuperación con el SMTP corporativo."""
+    try:
+        email_clean = payload.email.strip().lower()
+        user_record = admin_auth.get_user_by_email(email_clean)
+        
+        action_code_settings = admin_auth.ActionCodeSettings(
+            url="https://observatoriolaboralcr.org/auth-action",
+            handle_code_in_app=True,
+        )
+
+        reset_link = admin_auth.generate_password_reset_link(
+            user_record.email, 
+            action_code_settings=action_code_settings
+        )
+
+        subject = "Observatorio Laboral: Restablecer su contraseña"
+        body = f"""
+        <strong>Estimado/a usuario/a,</strong><br><br>
+        Hemos recibido una solicitud para restablecer la contraseña de acceso al panel del Observatorio de Derechos Laborales.<br><br>
+        Para definir una nueva contraseña, haga clic en el siguiente enlace de seguridad:<br>
+        <a href="{reset_link}" style="display:inline-block; padding:10px 20px; background-color:#081A3D; color:white; text-decoration:none; border-radius:4px; font-weight:bold; margin: 15px 0;">Restablecer mi Contraseña</a><br><br>
+        <small style="color:#666;">Si no solicitó este cambio, puede ignorar este mensaje de forma segura.</small>
+        """
+
+        _enviar_correo_interno(user_record.email, subject, body.strip(), template_name='emailTemplate')
+        return {"message": "Si el correo existe, el enlace de restablecimiento ha sido enviado."}
+
+    except admin_auth.UserNotFoundError:
+        return {"message": "Si el correo existe, el enlace de restablecimiento ha sido enviado."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -153,7 +187,7 @@ async def servir_documento(filename: str):
             if matched_blob:
                 blob = matched_blob
             else:
-                raise HTTPException(status_code=404, detail="El documento no fue encontrado.")
+                raise HTTPException(status_code=404, detail="El documento no fue encontrado en el servidor.")
 
         contents = blob.download_as_bytes()
         clean_filename = blob.name.split('/')[-1].split('_', 1)[-1]
@@ -172,7 +206,7 @@ async def servir_documento(filename: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==============================================================================
-# ENDPOINTS ADMINISTRATIVOS (PROTEGIDOS CON TOKEN BEARER)
+# ENDPOINTS ADMINISTRATIVOS PROTEGIDOS
 # ==============================================================================
 @app.post("/completar-denuncia")
 async def completar_denuncia(payload: StatusUpdatePayload, user: dict = Depends(verificar_usuario_autenticado)):
@@ -181,14 +215,14 @@ async def completar_denuncia(payload: StatusUpdatePayload, user: dict = Depends(
         denuncia_doc = denuncia_ref.get()
 
         if not denuncia_doc.exists:
-            raise HTTPException(status_code=404, detail="La denuncia no existe.")
+            raise HTTPException(status_code=404, detail="La denuncia especificada no existe.")
 
         denuncia_data = denuncia_doc.to_dict()
         estado_actual = denuncia_data.get("estado", "pendiente")
         tipo_denuncia = denuncia_data.get("tipoDenuncia", "otros")
 
         if estado_actual == "completada":
-            return {"message": "La denuncia ya se encontraba completada."}
+            return {"message": "La denuncia ya se encontraba en estado completada."}
 
         denuncia_ref.update({
             "estado": "completada",
@@ -265,7 +299,7 @@ async def extract_metadata(file: UploadFile = File(...), user: dict = Depends(ve
     if not client:
         raise HTTPException(status_code=500, detail="Cliente Vertex AI no inicializado.")
     if not file.filename.endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Solo se permiten archivos PDF.")
+        raise HTTPException(status_code=400, detail="Solo se permiten archivos PDF")
     try:
         content = await file.read()
         prompt = """
@@ -275,7 +309,7 @@ async def extract_metadata(file: UploadFile = File(...), user: dict = Depends(ve
         - 'categoria': Clasifícalo strictly en una de estas: 'leyes', 'reglamentos', 'tratados', 'jurisprudencia', 'articulos'.
         - 'anio': El año de publicación o emisión (número entero).
         - 'descripcion': Un resumen o síntesis del documento que tenga entre dos y tres líneas.
-        Devuelve SOLO el objeto JSON válido.
+        Reglas: 1. Si es una Ley Nacional, usa 'leyes'. 2. Si es un Reglamento, usa 'reglamentos'. 3. Devuelve SOLO el objeto JSON válido.
         """
         pdf_part = types.Part.from_bytes(data=content, mime_type="application/pdf")
         response = client.models.generate_content(model="gemini-2.5-flash", contents=[prompt, pdf_part])
@@ -297,20 +331,23 @@ async def generate_report(data: ReportData, user: dict = Depends(verificar_usuar
     Eres PIDA, la Inteligencia Artificial analítica del Observatorio de Derechos Laborales de Costa Rica.
     Hoy es {fecha_formateada}. Debes redactar un Informe Ejecutivo formal.
     
-    Instrucciones de cabecera:
-    - Fecha de Emisión: {fecha_formateada}.
-    - Código de Informe: ODL-PIDA-{anio_actual}-01.
+    Instrucciones de cabecera obligatorias:
+    - En la 'Fecha de Emisión' usa: {fecha_formateada}.
+    - En el código de Informe usa el año actual: ODL-PIDA-{anio_actual}-01.
     
-    Datos numéricos:
-    - Casos totales: {data.total_denuncias} | Pendientes: {data.pendientes} | Completadas: {data.completadas}
-    - Desglose por tipo: {json.dumps(data.desglose_tipos, ensure_ascii=False)}
+    Datos matemáticos reales para el análisis:
+    - Total de casos recibidos: {data.total_denuncias}
+    - Casos pendientes de revisión: {data.pendientes}
+    - Casos con asesoría completada: {data.completadas}
+    - Desglose detallado por tipo de vulneración: {json.dumps(data.desglose_tipos, ensure_ascii=False)}
     
-    Estructura requerida:
+    El informe debe contener:
     1. Título formal.
     2. Resumen Ejecutivo.
     3. Análisis de Tendencias.
     4. Recomendaciones Estratégicas.
-    Tono institucional, académico y objetivo.
+    
+    Tono: Académico, institucional y objetivo. No inventes fechas, usa las proporcionadas arriba.
     """
     try:
         response = client.models.generate_content(model="gemini-2.5-pro", contents=prompt)
@@ -323,28 +360,31 @@ def _enviar_correo_interno(to_email: str, subject: str, body: str, template_name
     smtp_pass = os.environ.get("SMTP_PASSWORD")
     
     if not smtp_pass:
-        raise Exception("Falta SMTP_PASSWORD en las variables de entorno.")
+        raise Exception("Falta la contraseña del servidor SMTP (SMTP_PASSWORD en las variables de entorno).")
         
     try:
         template_ref = db_fs.collection('config').document(template_name).get()
-        html_base = template_ref.to_dict().get('html') if template_ref.exists else "<html><body>{{CONTENT}}</body></html>"
+        if template_ref.exists:
+            html_base = template_ref.to_dict().get('html')
+        else:
+            html_base = "<html><body>{{CONTENT}}</body></html>"
     except Exception:
         html_base = "<html><body>{{CONTENT}}</body></html>"
 
-    # Pie legal obligatorio de confidencialidad y deslinde
     disclaimer = """
     <br><hr style="border:0; border-top:1px solid #e0e0e0; margin:20px 0;">
     <p style="font-size:11px; color:#777; line-height:1.4;">
     <strong>Aviso Legal:</strong> La información suministrada tiene carácter estrictamente orientador e informativo conforme a la Ley N° 8968 de Costa Rica. No constituye patrocinio legal ni sustituye trámites ante el Ministerio de Trabajo y Seguridad Social (MTSS) o tribunales.
     </p>
     """
-    
+
     formatted_body = body.replace("\n", "<br>") + disclaimer
     final_html = html_base.replace("{{CONTENT}}", formatted_body)
 
     message = EmailMessage()
     message.set_content(body)
     message.add_alternative(final_html, subtype='html')
+    
     message['To'] = to_email
     message['From'] = f"Observatorio Laboral CR <{smtp_user}>"
     message['Subject'] = subject
@@ -352,9 +392,13 @@ def _enviar_correo_interno(to_email: str, subject: str, body: str, template_name
     smtp_server = "mailout.easymail.ca"
     smtp_port = 465
     
-    with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
-        server.login(smtp_user, smtp_pass)
-        server.send_message(message)
+    try:
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            server.login(smtp_user, smtp_pass)
+            server.send_message(message)
+    except Exception as e:
+        print(f"Error SMTP: {e}")
+        raise Exception("Ocurrió un error al intentar enviar el correo mediante SMTP.")
 
 @app.post("/send-email")
 async def send_email(data: EmailData, user: dict = Depends(verificar_usuario_autenticado)):
@@ -370,7 +414,6 @@ async def create_user(data: CreateUserData, user: dict = Depends(verificar_usuar
     temp_password = ''.join(secrets.choice(alphabet) for i in range(12))
     
     try:
-        # 1. Crear o actualizar el usuario en Firebase Authentication
         try:
             user_record = admin_auth.create_user(
                 email=data.email,
@@ -382,19 +425,16 @@ async def create_user(data: CreateUserData, user: dict = Depends(verificar_usuar
             user_record = admin_auth.get_user_by_email(data.email)
             admin_auth.update_user(user_record.uid, password=temp_password, email_verified=False)
             
-        # 2. Configurar la URL de redirección a tu dominio oficial
         action_code_settings = admin_auth.ActionCodeSettings(
             url="https://observatoriolaboralcr.org/auth-action",
             handle_code_in_app=True,
         )
 
-        # 3. Generar el enlace con la configuración de acción
         verification_link = admin_auth.generate_email_verification_link(
             data.email,
             action_code_settings=action_code_settings
         )
-
-        # 4. Guardar rol en Firestore
+        
         coleccion = "admins" if data.rol == "admin" else "autores"
         rol_legible = "Administrador del Sistema" if data.rol == "admin" else "Redactor del Blog"
         
@@ -405,19 +445,23 @@ async def create_user(data: CreateUserData, user: dict = Depends(verificar_usuar
             "date": firestore.SERVER_TIMESTAMP
         })
         
-        # 5. Estructurar y enviar correo de bienvenida
         subject = f"Invitación: Acceso como {rol_legible}"
         body = f"""
         <strong>Hola {data.nombre},</strong><br><br>
-        Se te ha concedido acceso a la plataforma con el rol de: <strong>{rol_legible}</strong>.<br><br>
-        Tus credenciales temporales son:<br>
+        Se te ha concedido acceso a la plataforma del Observatorio de Derechos Laborales con el rol de: <strong>{rol_legible}</strong>.<br><br>
+        Tus credenciales de acceso temporal son:<br>
         Usuario: <strong>{data.email}</strong><br>
-        Contraseña: <strong style="background-color:#f0f0f0; padding:3px 6px; border-radius:4px;">{temp_password}</strong><br><br>
-        <a href="{verification_link}" style="display:inline-block; padding:10px 20px; background-color:#081A3D; color:white; text-decoration:none; border-radius:4px; font-weight:bold;">Verificar Cuenta</a>
+        Contraseña: <strong style="background-color:#f0f0f0; padding:3px 6px; border-radius:4px; letter-spacing:1px;">{temp_password}</strong><br><br>
+        <strong style="color:#d32f2f;">MUY IMPORTANTE:</strong> Antes de poder iniciar sesión por primera vez, debes verificar tu cuenta haciendo clic en el siguiente botón de seguridad:<br>
+        <a href="{verification_link}" style="display:inline-block; padding:12px 24px; background-color:#081A3D; color:white; text-decoration:none; border-radius:5px; margin-top:15px; margin-bottom:15px; font-weight:bold;">Verificar mi Cuenta</a><br><br>
+        Una vez verificado el correo, podrás entrar al panel administrativo.
         """
+        
         _enviar_correo_interno(data.email, subject, body.strip(), template_name='inviteTemplate')
-        return {"message": "Usuario registrado exitosamente."}
+        return {"message": "Usuario creado, registrado y correo de verificación enviado."}
+        
     except Exception as e:
+        print(f"Error creando usuario: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
